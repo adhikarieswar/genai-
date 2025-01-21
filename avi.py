@@ -1,9 +1,15 @@
 import streamlit as st
 from langchain.prompts import PromptTemplate
 from langchain.llms import CTransformers
-# Use a pipeline as a high-level helper
-# Use a pipeline as a high-level helper
+from langchain_openai import ChatOpenAI
 
+# Use a pipeline as a high-level helper
+# Use a pipeline as a high-level helper
+from langchain_openai import ChatOpenAI
+import os
+
+
+os.environ["GROQ_API_KEY"] = "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"  # Replace with your actual API key
 
 
 
@@ -12,11 +18,14 @@ from langchain.llms import CTransformers
 
 
 def getLLamaresponse(input_text, no_words, blog_style):
+    llm = ChatOpenAI(
+        openai_api_base="https://api.groq.com/openai/v1",
+        openai_api_key=os.environ['GROQ_API_KEY'],
+        model_name="llama3-8b-8192",
+        temperature=0,
+        max_tokens=1000,
+    )
 
-    llm = CTransformers(model="meta-llama/Llama-2-7b-hf",model_path='https://huggingface.co/meta-llama/Llama-2-7b-chat-hf',
-                        model_type='llama',
-                        config={'max_new_tokens': 256,
-                                'temperature': 0.01})
 
 
     # Prompt Template
