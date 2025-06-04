@@ -1,0 +1,150 @@
+from typing import TypedDict, List, Dict, Any
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_community.tools import DuckDuckGoSearchResults
+from langchain_community.document_loaders import WebBaseLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.chains.summarize import load_summarize_chain
+from langchain_openai import ChatOpenAI
+import re
+import os
+
+# Set your DeepSeek API key (replace with actual key)
+os.environ["DEEPSEEK_API_KEY"] = "your-deepseek-api-key-here"
+
+# Define AgentState
+class AgentState(TypedDict):
+    input: str
+    research_plan: List[str]
+    gathered_info: List[Dict[str, Any]]
+    report: str
+
+# Initialize components with DeepSeek
+search = DuckDuckGoSearchResults(backend="text")
+llm = ChatOpenAI(
+    model_name="deepseek-chat",  # Use DeepSeek's model
+    openai_api_key=os.getenv("DEEPSEEK_API_KEY"),
+    openai_api_base="https://api.deepseek.com/v1"  # DeepSeek API endpoint
+)
+
+def extract_urls(search_results):
+    try:
+        if isinstance(search_results, str):
+            url_pattern = r'https?://[^\s]+'
+            urls = re.findall(url_pattern, search_results)
+            return [url for url in urls if not url.endswith(('.pdf', '.jpg', '.png'))][:2]
+        return []
+    except Exception as e:
+        print(f"URL extraction error: {e}")
+        return []
+
+def research_planner(state: AgentState) -> AgentState:
+    print("\n🔍 Research Planner working...")
+    prompt = ChatPromptTemplate.from_template(
+        "Generate 3-5 specific research questions about: {input}\n"
+        "Format as a numbered list with only questions."
+    )
+    chain = prompt | llm | StrOutputParser()
+    questions = chain.invoke({"input": state["input"]})
+    return {
+        **state,
+        "research_plan": [q.strip() for q in questions.split("\n") if q.strip() and q[0].isdigit()]
+    }
+
+def information_gatherer(state: AgentState) -> AgentState:
+    print("\n🌐 Information Gatherer working...")
+    gathered_info = []
+    
+    for question in state["research_plan"]:
+        print(f"  Researching: {question}")
+        try:
+            search_results = search.run(question)
+            urls = extract_urls(search_results)
+            
+            for url in urls:
+                try:
+                    loader = WebBaseLoader(url)
+                    docs = loader.load()
+                    
+                    text_splitter = RecursiveCharacterTextSplitter(
+                        chunk_size=3000,
+                        chunk_overlap=300
+                    )
+                    splits = text_splitter.split_documents(docs)
+                    
+                    summarize_chain = load_summarize_chain(llm, chain_type="map_reduce")
+                    summary = summarize_chain.run(splits[:2])
+                    
+                    gathered_info.append({
+                        "question": question,
+                        "source": url,
+                        "summary": summary
+                    })
+                    
+                except Exception as e:
+                    print(f"    ⚠️ Error processing {url}: {e}")
+                    gathered_info.append({
+                        "question": question,
+                        "source": url,
+                        "error": str(e)
+                    })
+                    
+        except Exception as e:
+            print(f"  ⚠️ Research failed: {e}")
+            gathered_info.append({
+                "question": question,
+                "error": str(e)
+            })
+    
+    return {**state, "gathered_info": gathered_info}
+
+def report_writer(state: AgentState) -> AgentState:
+    print("\n✍️ Report Writer working...")
+    
+    context = []
+    for item in state["gathered_info"]:
+        if "summary" in item:
+            context.append(
+                f"### {item['question']}\n"
+                f"**Source:** {item['source']}\n"
+                f"**Summary:** {item['summary']}\n"
+            )
+        else:
+            context.append(
+                f"### {item['question']}\n"
+                f"⚠️ Error: {item.get('error', 'Unknown')}\n"
+            )
+    
+    prompt = ChatPromptTemplate.from_template(
+        "Write a detailed 500-700 word report on: {input}\n"
+        "Using these research findings:\n{context}\n\n"
+        "Structure with:\n"
+        "1. Introduction\n2. Key Findings\n3. Conclusion\n"
+        "Cite sources where applicable."
+    )
+    
+    chain = prompt | llm | StrOutputParser()
+    report = chain.invoke({
+        "input": state["input"],
+        "context": "\n".join(context)
+    })
+    
+    return {**state, "report": report}
+
+# Initialize and run workflow
+from langgraph.graph import Graph
+
+workflow = Graph()
+workflow.add_node("planner", research_planner)
+workflow.add_node("gatherer", information_gatherer)
+workflow.add_node("writer", report_writer)
+workflow.add_edge("planner", "gatherer")
+workflow.add_edge("gatherer", "writer")
+workflow.set_entry_point("planner")
+workflow.set_finish_point("writer")
+research_app = workflow.compile()
+
+# Execute with your topic
+results = research_app.invoke({"input": "The impact of large language models on education"})
+print("\n📄 Final Report:")
+print(results["report"])
